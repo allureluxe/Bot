@@ -15,14 +15,12 @@ from typing import Optional, Dict, List
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
-if not all([BOT_TOKEN, TWELVE_API_KEY, BINANCE_API_KEY, BINANCE_SECRET_KEY]):
-    raise ValueError("Missing required environment variables")
+if not all([BOT_TOKEN, BINANCE_API_KEY, BINANCE_SECRET_KEY]):
+    raise ValueError("Missing required environment variables: BOT_TOKEN, BINANCE_API_KEY, BINANCE_SECRET_KEY")
 
-BASE_URL = "https://api.twelvedata.com/time_series"
 BINANCE_BASE_URL = "https://api.binance.com"
 
 # Trading pairs configuration
@@ -35,7 +33,7 @@ TRADING_PAIRS = {
 TRADE_AMOUNT = 20  # €20 par trade
 STOP_LOSS_PERCENT = 5  # 5% stop loss
 TAKE_PROFIT_PERCENT = 5  # 5% take profit
-TIMEFRAMES = ["15min", "1h", "4h"]
+TIMEFRAMES = ["15m", "1h", "4h"]  # Binance timeframes
 
 # Setup logging
 logging.basicConfig(
@@ -100,6 +98,21 @@ class BinanceClient:
             logger.error(f"Error getting price for {symbol}: {e}")
             return None
     
+    async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> Optional[List[float]]:
+        """Get candlestick data from Binance"""
+        try:
+            url = f"{self.base_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        closes = [float(candle[4]) for candle in data]  # Close price is index 4
+                        return closes
+            return None
+        except Exception as e:
+            logger.error(f"Error getting klines for {symbol}: {e}")
+            return None
+    
     async def place_order(self, symbol: str, side: str, quantity: float) -> Optional[Dict]:
         """Place market order on Binance"""
         try:
@@ -121,36 +134,6 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Error placing order for {symbol}: {e}")
             return None
-
-
-async def get_candles(symbol: str, interval: str, outputsize: int = 100) -> Optional[List[float]]:
-    """Fetch candle data from Twelve Data API"""
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "apikey": TWELVE_API_KEY,
-        "outputsize": outputsize,
-        "format": "JSON"
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(BASE_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    logger.error(f"API error for {symbol}: Status {response.status}")
-                    return None
-                
-                data = await response.json()
-                
-                if "values" not in data:
-                    logger.warning(f"No values in response for {symbol}")
-                    return None
-                
-                closes = [float(candle["close"]) for candle in reversed(data["values"])]
-                return closes
-    except Exception as e:
-        logger.error(f"Error fetching candles for {symbol}: {e}")
-        return None
 
 
 def ema(prices: List[float], period: int) -> Optional[float]:
@@ -194,15 +177,12 @@ def rsi(prices: List[float], period: int = 14) -> Optional[float]:
     return 100 - (100 / (1 + rs))
 
 
-async def analyze_symbol(symbol_name: str, tf: str) -> Optional[Dict]:
+async def analyze_symbol(binance_client: BinanceClient, symbol: str, tf: str) -> Optional[Dict]:
     """Analyze symbol with technical indicators"""
-    # Convert to Twelve Data format (e.g., BTC -> BTC/USD)
-    twelve_symbol = f"{symbol_name}/USD"
-    
-    prices = await get_candles(twelve_symbol, tf)
+    prices = await binance_client.get_klines(symbol, tf, limit=100)
     
     if not prices or len(prices) < 50:
-        logger.warning(f"Insufficient data for {symbol_name} on {tf}")
+        logger.warning(f"Insufficient data for {symbol} on {tf}")
         return None
     
     try:
@@ -211,7 +191,7 @@ async def analyze_symbol(symbol_name: str, tf: str) -> Optional[Dict]:
         ema50 = ema(prices, 50)
         current_rsi = rsi(prices, 14)
         
-        if not all([ema20, ema50, current_rsi]):
+        if not all([ema20, ema50, current_rsi is not None]):
             return None
         
         if current_price > ema20 > ema50 and current_rsi > 55:
@@ -229,7 +209,7 @@ async def analyze_symbol(symbol_name: str, tf: str) -> Optional[Dict]:
             "signal": signal
         }
     except Exception as e:
-        logger.error(f"Error analyzing {symbol_name} on {tf}: {e}")
+        logger.error(f"Error analyzing {symbol} on {tf}: {e}")
         return None
 
 
@@ -304,11 +284,12 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Analyze each trading pair
         for symbol_name in TRADING_PAIRS.keys():
+            binance_symbol = TRADING_PAIRS[symbol_name]
             buy_count = 0
             sell_count = 0
             
             for tf in TIMEFRAMES:
-                result = await analyze_symbol(symbol_name, tf)
+                result = await analyze_symbol(binance_client, binance_symbol, tf)
                 if result:
                     if result["signal"] == "BUY":
                         buy_count += 1
