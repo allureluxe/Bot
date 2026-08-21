@@ -19,7 +19,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
-
 BINANCE_BASE_URL = "https://api.binance.com"
 
 # Quote asset (USDC only)
@@ -624,14 +623,17 @@ async def stop_trading(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
-    missing = [name for name, val in [
-        ("BOT_TOKEN", BOT_TOKEN),
-        ("BINANCE_API_KEY", BINANCE_API_KEY),
-        ("BINANCE_SECRET_KEY", BINANCE_SECRET_KEY),
-    ] if not val]
+    missing = [
+        name for name, val in [
+            ("BOT_TOKEN", BOT_TOKEN),
+            ("BINANCE_API_KEY", BINANCE_API_KEY),
+            ("BINANCE_SECRET_KEY", BINANCE_SECRET_KEY),
+        ]
+        if not val
+    ]
     if missing:
-        logging.critical("❌ Missing required environment variables: %s", ", ".join(missing))
-        return
+        logger.critical(f"❌ Variables d'environnement manquantes : {', '.join(missing)}")
+        raise SystemExit(1)
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
