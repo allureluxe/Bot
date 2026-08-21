@@ -12,8 +12,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 
-if not BOT_TOKEN or not TWELVE_API_KEY:
-    raise ValueError("BOT_TOKEN and TWELVE_API_KEY must be set in .env file")
 
 BASE_URL = "https://api.twelvedata.com/time_series"
 
@@ -221,6 +219,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
+    missing = [name for name, val in [
+        ("BOT_TOKEN", BOT_TOKEN),
+        ("TWELVE_API_KEY", TWELVE_API_KEY),
+    ] if not val]
+    if missing:
+        logging.critical("❌ Missing required environment variables: %s", ", ".join(missing))
+        return
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))

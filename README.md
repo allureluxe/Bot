@@ -123,7 +123,45 @@ Les logs incluent:
 - 📊 Historique limité à 100 bougies par défaut
 - 🌍 Dépend de la disponibilité de l'API
 
-## Support & Contributions
+## Déploiement 24/7 (Railway / Render) 🚀
+
+Pour que le bot réponde **en permanence** à `/start`, il doit tourner sur un **vrai serveur**, pas seulement dans GitHub Actions (qui s'arrête après quelques heures).
+
+### Option 1 — Railway (recommandé, gratuit)
+
+1. Va sur [railway.app](https://railway.app) et connecte ton compte GitHub
+2. Clique **New Project → Deploy from GitHub Repo → `allureluxe/Bot`**
+3. Dans **Variables**, ajoute :
+   - `BOT_TOKEN` = ton token Telegram
+   - `BINANCE_API_KEY` = ta clé Binance
+   - `BINANCE_SECRET_KEY` = ton secret Binance
+   - `TWELVE_API_KEY` = ta clé Twelve Data (si tu utilises `main.py`)
+4. Dans **Settings → Start Command**, mets : `python trading_bot.py`
+5. Clique **Deploy** → le bot tourne 24/7 automatiquement
+
+### Option 2 — Render (gratuit)
+
+1. Va sur [render.com](https://render.com) → **New → Background Worker**
+2. Connecte ton repo GitHub `allureluxe/Bot`
+3. **Build Command** : `pip install -r requirements.txt`
+4. **Start Command** : `python trading_bot.py`
+5. Ajoute les variables d'environnement dans l'onglet **Environment**
+6. Clique **Create Background Worker**
+
+### Option 3 — GitHub Actions (temporaire, redémarre toutes les 5h)
+
+Le workflow `.github/workflows/bot.yml` est configuré pour relancer le bot toutes les 5 heures automatiquement. C'est suffisant pour tester, mais **pas recommandé pour un usage permanent** car il y a des délais entre les redémarrages.
+
+### Variables d'environnement requises
+
+| Variable | Description |
+|---|---|
+| `BOT_TOKEN` | Token du bot Telegram (via [@BotFather](https://t.me/BotFather)) |
+| `BINANCE_API_KEY` | Clé API Binance |
+| `BINANCE_SECRET_KEY` | Secret Binance |
+| `TWELVE_API_KEY` | Clé API Twelve Data (pour `main.py`) |
+
+
 
 Pour signaler des bugs ou proposer des améliorations, ouvrez une issue sur GitHub.
 
