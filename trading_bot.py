@@ -160,15 +160,19 @@ def calc_ema_series(prices: List[float], period: int) -> List[float]:
 
 
 def calc_rsi(prices: List[float], period: int = 14) -> Optional[float]:
+    """Wilder's Smoothed RSI using all available price data."""
     if len(prices) < period + 1:
         return None
-    gains, losses = [], []
-    for i in range(1, period + 1):
-        d = prices[i] - prices[i - 1]
-        (gains if d > 0 else losses).append(abs(d))
-        (losses if d > 0 else gains).append(0.0)
-    avg_g = sum(gains) / period
-    avg_l = sum(losses) / period
+    # Seed with simple averages over the first `period` changes
+    changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+    avg_g = sum(max(d, 0) for d in changes[:period]) / period
+    avg_l = sum(abs(min(d, 0)) for d in changes[:period]) / period
+    # Wilder smoothing over remaining candles
+    for d in changes[period:]:
+        gain = max(d, 0)
+        loss = abs(min(d, 0))
+        avg_g = (avg_g * (period - 1) + gain) / period
+        avg_l = (avg_l * (period - 1) + loss) / period
     if avg_l == 0:
         return 100.0
     return 100.0 - 100.0 / (1 + avg_g / avg_l)
@@ -386,6 +390,9 @@ async def close_trade(client: BinanceClient, symbol: str, reason: str, notify_ch
             price = trade["entry_price"]
 
         order = await client.place_order(symbol, close_side, trade["quantity"])
+        if not order:
+            logger.error(f"close_trade({symbol}): order placement failed, position tracking retained")
+            return
 
         if trade["side"] == "BUY":
             pnl = (price - trade["entry_price"]) * trade["quantity"]
@@ -562,10 +569,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = await client.get_account_balance()
 
     status_icon = "🟢 ACTIF" if is_running else "🔴 INACTIF"
+    balance_line = f"💰 Solde USDT: `${balance:.2f}`\n" if balance else "💰 Solde USDT: _indisponible_\n"
     msg = (
         f"📊 *Statut du Bot*\n\n"
         f"🤖 État: {status_icon}\n"
-        f"💰 Solde USDT: `${balance:.2f}`\n" if balance else f"💰 Solde USDT: _indisponible_\n"
+        + balance_line +
         f"📋 Positions ouvertes: `{len(active_trades)}`\n"
         f"📈 Trades aujourd'hui: `{total_trades_today}`\n"
         f"💹 PnL jour: `{'+' if total_pnl_today >= 0 else ''}{total_pnl_today:.2f} USDT`\n"
@@ -594,10 +602,10 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration = datetime.now() - t["opened_at"]
         mins = int(duration.total_seconds() / 60)
 
+        price_line = f"  Entrée: `${t['entry_price']:.4f}` | Actuel: `${price:.4f}`\n" if price else f"  Entrée: `${t['entry_price']:.4f}`\n"
         msg += (
             f"{emoji} *{symbol}* ({t['side']})\n"
-            f"  Entrée: `${t['entry_price']:.4f}` | Actuel: `${price:.4f}`\n" if price else
-            f"  Entrée: `${t['entry_price']:.4f}`\n"
+            + price_line +
             f"  PnL latent: `{'+' if unrealized >= 0 else ''}{unrealized:.2f} USDT` ({pct:+.2f}%)\n"
             f"  TP: `${t['tp_price']:.4f}` | SL: `${t['sl_price']:.4f}`\n"
             f"  Ouvert depuis: `{mins}min`\n\n"
