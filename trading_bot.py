@@ -21,23 +21,14 @@ BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
-# Quote asset (USDC only)
+# Quote asset
 QUOTE_ASSET = "USDC"
 
-# Trading pairs configuration
-TRADING_PAIRS = {
-    "BTC": f"BTC{QUOTE_ASSET}",
-    "ETH": f"ETH{QUOTE_ASSET}",
-    "BNB": f"BNB{QUOTE_ASSET}"
-}
-
-TRADE_AMOUNT = 20  # $20 par trade
-STOP_LOSS_PERCENT = 5  # 5% stop loss
+STOP_LOSS_PERCENT = 5   # 5% stop loss
 TAKE_PROFIT_PERCENT = 5  # 5% take profit
-TIMEFRAMES = ["15m", "1h", "4h"]  # Binance timeframes
 
 # --- Money management ---
-RISK_PER_TRADE = 0.01       # 1 % du solde USDC par position
+RISK_PER_TRADE = 0.01       # 1 % du solde par position
 MIN_TRADE_AMOUNT = 5.0      # taille minimale en USDC
 MAX_TRADE_AMOUNT = 25.0     # plafond par position en USDC
 
@@ -237,6 +228,19 @@ def rsi(prices: List[float], period: int = 14) -> Optional[float]:
     return 100 - (100 / (1 + rs))
 
 
+def calculate_trade_amount(balance: float) -> float:
+    """Compute position size: RISK_PER_TRADE % of balance, clamped to [MIN, MAX]."""
+    amount = balance * RISK_PER_TRADE
+    amount = max(MIN_TRADE_AMOUNT, amount)
+    amount = min(MAX_TRADE_AMOUNT, amount)
+    return round(amount, 2)
+
+
+def is_symbol_tradeable(volume: float, spread_pct: float) -> bool:
+    """Return True if the symbol passes liquidity and spread filters."""
+    return volume >= MIN_QUOTE_VOLUME and spread_pct <= MAX_SPREAD_PCT
+
+
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
 
@@ -418,17 +422,17 @@ async def execute_trade(
             await update.message.reply_text(f"⚠️ {symbol}: SELL rejeté par Binance")
             return False, 0.0
         return False, 0.0
-    
+
     except Exception as e:
         logger.error(f"Error executing trade for {symbol}: {e}")
         return False, 0.0
 
 
 async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start autonomous trading"""
+    """Start scalping scanner across all liquid USDT pairs"""
     try:
         binance_client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY)
-        
+
         # Get account balance
         balance = await binance_client.get_account_balance()
         if not balance:
@@ -456,7 +460,7 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in book_tickers
         }
 
-        message = f"🤖 *Mode Trading Autonome (USDC)*\n\n💰 Solde {QUOTE_ASSET}: {balance:.2f} {QUOTE_ASSET}\n"
+        message = f"🤖 *Mode Trading Autonome ({QUOTE_ASSET})*\n\n💰 Solde {QUOTE_ASSET}: {balance:.2f} {QUOTE_ASSET}\n"
         message += f"📊 Taille dynamique: {RISK_PER_TRADE * 100:.2f}% (min {MIN_TRADE_AMOUNT} / max {MAX_TRADE_AMOUNT} {QUOTE_ASSET})\n"
         message += f"⛔ Stop Loss: {STOP_LOSS_PERCENT}%\n"
         message += f"🎯 Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
@@ -474,7 +478,6 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wait_signals = 0
         trades_done = 0
 
-        # Analyze each active USDC pair
         for symbol in usdc_symbols:
             quote_volume = volume_map.get(symbol, 0)
             if quote_volume < MIN_QUOTE_VOLUME:
@@ -537,7 +540,7 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             decisions = decisions[:30] + [f"... {total_decisions - 30} décisions supplémentaires"]
 
         scan_summary = (
-            f"📡 *Scan USDC terminé*\n"
+            f"📡 *Scan {QUOTE_ASSET} terminé*\n"
             f"• Scannés: {scanned}\n"
             f"• Filtrés liquidité: {filtered_liquidity} (< {MIN_QUOTE_VOLUME:,.0f} {QUOTE_ASSET})\n"
             f"• Filtrés sans bid/ask: {filtered_no_book}\n"
@@ -551,13 +554,12 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if decisions:
             await update.message.reply_text("🧭 *Décisions*\n" + "\n".join(decisions), parse_mode="Markdown")
 
-        # Report active trades
         if active_trades:
-            trades_msg = "\n📋 *Positions Ouvertes:*\n"
-            for symbol, trade in active_trades.items():
-                trades_msg += f"\n{symbol}: {trade['side']} @ ${trade['entry_price']:.2f}"
-            await update.message.reply_text(trades_msg, parse_mode="Markdown")
-    
+            positions_msg = f"📋 *Positions Ouvertes ({len(active_trades)}):*\n"
+            for sym, trade in active_trades.items():
+                positions_msg += f"\n• {sym}: {trade['side']} @ ${trade['entry_price']:.4f}"
+            await update.message.reply_text(positions_msg, parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"Error in auto_trade: {e}")
         await update.message.reply_text(f"❌ Erreur: {str(e)}")
@@ -593,15 +595,18 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     message = (
-        "🤖 *Bot Trading Autonome Binance*\n\n"
+        "🤖 *Bot Scalping Binance*\n\n"
         "Commandes disponibles:\n"
-        "/trade - Démarrer le trading automatique\n"
+        "/trade - Démarrer le scanner scalping\n"
         "/status - Voir le statut des positions\n"
         "/stop - Arrêter le trading\n\n"
         f"⚙️ Configuration:\n"
-        f"• Montant par trade: {TRADE_AMOUNT} {QUOTE_ASSET}\n"
+        f"• Risque par trade: {RISK_PER_TRADE * 100:.0f}% du solde\n"
+        f"• Taille min/max: {MIN_TRADE_AMOUNT}/{MAX_TRADE_AMOUNT} {QUOTE_ASSET}\n"
         f"• Stop Loss: {STOP_LOSS_PERCENT}%\n"
-        f"• Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
+        f"• Take Profit: {TAKE_PROFIT_PERCENT}%\n"
+        f"• Timeframes: {', '.join(SCALPING_TIMEFRAMES)}\n"
+        f"• Positions max: {MAX_OPEN_POSITIONS}\n\n"
         "⚠️ ATTENTION: Trading réel avec argent véritable!"
     )
     await update.message.reply_text(message, parse_mode="Markdown")
