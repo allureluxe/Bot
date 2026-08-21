@@ -23,17 +23,20 @@ if not all([BOT_TOKEN, BINANCE_API_KEY, BINANCE_SECRET_KEY]):
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
-# Trading pairs configuration
-TRADING_PAIRS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "BNB": "BNBUSDT"
-}
-
-TRADE_AMOUNT = 20  # €20 par trade
-STOP_LOSS_PERCENT = 5  # 5% stop loss
+# Legacy fixed amount kept for reference but no longer used directly
+STOP_LOSS_PERCENT = 5   # 5% stop loss
 TAKE_PROFIT_PERCENT = 5  # 5% take profit
-TIMEFRAMES = ["15m", "1h", "4h"]  # Binance timeframes
+
+# --- Money management ---
+RISK_PER_TRADE = 0.01       # 1 % du solde USDT par position
+MIN_TRADE_AMOUNT = 5.0      # taille minimale en USDT
+MAX_TRADE_AMOUNT = 25.0     # plafond par position en USDT
+
+# --- Scalping scanner ---
+SCALPING_TIMEFRAMES = ["1m", "5m", "15m"]
+MIN_QUOTE_VOLUME = 5_000_000  # volume 24 h minimum en USDT
+MAX_SPREAD_PCT = 0.15         # spread bid/ask max toléré (%)
+MAX_OPEN_POSITIONS = 5        # nombre max de positions simultanées
 
 # Setup logging
 logging.basicConfig(
@@ -113,6 +116,53 @@ class BinanceClient:
             logger.error(f"Error getting klines for {symbol}: {e}")
             return None
     
+    async def get_exchange_info(self) -> Optional[List[str]]:
+        """Return active USDT spot trading pairs"""
+        try:
+            url = f"{self.base_url}/api/v3/exchangeInfo"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        symbols = [
+                            s["symbol"]
+                            for s in data.get("symbols", [])
+                            if s.get("quoteAsset") == "USDT"
+                            and s.get("status") == "TRADING"
+                            and s.get("isSpotTradingAllowed", False)
+                        ]
+                        return symbols
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching exchange info: {e}")
+            return None
+
+    async def get_ticker_24h(self) -> Optional[List[Dict]]:
+        """Return 24-h ticker stats for all symbols"""
+        try:
+            url = f"{self.base_url}/api/v3/ticker/24hr"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 200:
+                        return await response.json()
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching 24h tickers: {e}")
+            return None
+
+    async def get_order_book(self, symbol: str) -> Optional[Dict]:
+        """Return best bid/ask for spread calculation"""
+        try:
+            url = f"{self.base_url}/api/v3/ticker/bookTicker?symbol={symbol}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        return await response.json()
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching order book for {symbol}: {e}")
+            return None
+
     async def place_order(self, symbol: str, side: str, quantity: float) -> Optional[Dict]:
         """Place market order on Binance"""
         try:
@@ -177,6 +227,99 @@ def rsi(prices: List[float], period: int = 14) -> Optional[float]:
     return 100 - (100 / (1 + rs))
 
 
+def calculate_trade_amount(balance: float) -> float:
+    """Compute position size: 1 % of balance, clamped to [MIN, MAX]."""
+    amount = balance * RISK_PER_TRADE
+    amount = max(MIN_TRADE_AMOUNT, amount)
+    amount = min(MAX_TRADE_AMOUNT, amount)
+    return round(amount, 2)
+
+
+def is_symbol_tradeable(volume: float, spread_pct: float) -> bool:
+    """Return True if the symbol passes liquidity and spread filters."""
+    return volume >= MIN_QUOTE_VOLUME and spread_pct <= MAX_SPREAD_PCT
+
+
+async def fetch_liquid_usdt_symbols(binance_client: BinanceClient) -> List[str]:
+    """
+    Return USDT pairs that have enough 24-h volume and a tight spread.
+    Results are sorted by descending quote volume so the most liquid
+    pairs are analysed first.
+    """
+    spot_symbols_task = binance_client.get_exchange_info()
+    tickers_task = binance_client.get_ticker_24h()
+
+    spot_symbols, tickers = await asyncio.gather(spot_symbols_task, tickers_task)
+
+    if not spot_symbols or not tickers:
+        return []
+
+    spot_set = set(spot_symbols)
+
+    # Build a volume map for quick lookup
+    volume_map: Dict[str, float] = {}
+    for t in tickers:
+        sym = t.get("symbol", "")
+        if sym in spot_set:
+            try:
+                volume_map[sym] = float(t.get("quoteVolume", 0))
+            except (ValueError, TypeError):
+                pass
+
+    # Filter by volume first (cheap), then check spread (requires extra call)
+    candidates = [
+        sym for sym, vol in volume_map.items()
+        if vol >= MIN_QUOTE_VOLUME
+    ]
+
+    # Sort by volume descending to prioritise most liquid
+    candidates.sort(key=lambda s: volume_map.get(s, 0), reverse=True)
+
+    # Limit how many spread calls we make to avoid hammering the API
+    MAX_CANDIDATES = 100
+    candidates = candidates[:MAX_CANDIDATES]
+
+    liquid = []
+    for sym in candidates:
+        book = await binance_client.get_order_book(sym)
+        if not book:
+            continue
+        try:
+            bid = float(book["bidPrice"])
+            ask = float(book["askPrice"])
+            if bid <= 0:
+                continue
+            spread_pct = (ask - bid) / bid * 100
+        except (KeyError, ValueError, ZeroDivisionError):
+            continue
+
+        if is_symbol_tradeable(volume_map.get(sym, 0), spread_pct):
+            liquid.append(sym)
+
+    logger.info(f"Liquid USDT symbols found: {len(liquid)} out of {len(candidates)} candidates")
+    return liquid
+
+
+def scalping_signal(results: List[Optional[Dict]]) -> str:
+    """
+    Aggregate multi-timeframe analysis results into a single BUY/SELL/WAIT.
+    A signal requires a majority of timeframes to agree.
+    """
+    buy_count = sum(1 for r in results if r and r.get("signal") == "BUY")
+    sell_count = sum(1 for r in results if r and r.get("signal") == "SELL")
+    total = len([r for r in results if r])
+
+    if total == 0:
+        return "WAIT"
+
+    # Require at least 2 timeframes to agree
+    if buy_count >= 2:
+        return "BUY"
+    if sell_count >= 2:
+        return "SELL"
+    return "WAIT"
+
+
 async def analyze_symbol(binance_client: BinanceClient, symbol: str, tf: str) -> Optional[Dict]:
     """Analyze symbol with technical indicators"""
     prices = await binance_client.get_klines(symbol, tf, limit=100)
@@ -213,28 +356,28 @@ async def analyze_symbol(binance_client: BinanceClient, symbol: str, tf: str) ->
         return None
 
 
-async def execute_trade(binance_client: BinanceClient, symbol_name: str, signal: str, update: Update):
+async def execute_trade(binance_client: BinanceClient, binance_symbol: str, signal: str, update: Update, trade_amount: float):
     """Execute trade based on signal"""
     try:
-        binance_symbol = TRADING_PAIRS.get(symbol_name)
-        if not binance_symbol:
-            logger.error(f"Symbol {symbol_name} not found in trading pairs")
-            return
-        
-        # Check if already have open trade
+        # Check if already have open trade for this symbol
         if binance_symbol in active_trades:
             logger.info(f"Already have open trade for {binance_symbol}")
             return
-        
+
+        # Check overall position cap
+        if len(active_trades) >= MAX_OPEN_POSITIONS:
+            logger.info(f"Max open positions ({MAX_OPEN_POSITIONS}) reached, skipping {binance_symbol}")
+            return
+
         # Get current price
         current_price = await binance_client.get_current_price(binance_symbol)
         if not current_price:
             logger.error(f"Could not get price for {binance_symbol}")
             return
-        
-        # Calculate quantity based on trade amount
-        quantity = TRADE_AMOUNT / current_price
-        
+
+        # Calculate quantity based on dynamic trade amount
+        quantity = trade_amount / current_price
+
         # Execute order
         if signal == "BUY":
             order = await binance_client.place_order(binance_symbol, "BUY", round(quantity, 8))
@@ -246,69 +389,85 @@ async def execute_trade(binance_client: BinanceClient, symbol_name: str, signal:
                     "timestamp": datetime.now(),
                     "order_id": order.get("orderId")
                 }
-                message = f"✅ *BUY Exécuté*\n{symbol_name}\nPrix: ${current_price}\nQuantité: {round(quantity, 8)}"
+                message = f"✅ *BUY Exécuté*\n{binance_symbol}\nPrix: ${current_price}\nMontant: ${trade_amount}\nQuantité: {round(quantity, 8)}"
                 await update.message.reply_text(message, parse_mode="Markdown")
                 logger.info(f"BUY order placed for {binance_symbol} at ${current_price}")
-        
-        elif signal == "SELL" and any(t["side"] == "BUY" for t in active_trades.values()):
+
+        elif signal == "SELL":
             order = await binance_client.place_order(binance_symbol, "SELL", round(quantity, 8))
             if order:
-                message = f"✅ *SELL Exécuté*\n{symbol_name}\nPrix: ${current_price}\nQuantité: {round(quantity, 8)}"
+                message = f"✅ *SELL Exécuté*\n{binance_symbol}\nPrix: ${current_price}\nMontant: ${trade_amount}\nQuantité: {round(quantity, 8)}"
                 await update.message.reply_text(message, parse_mode="Markdown")
                 if binance_symbol in active_trades:
                     del active_trades[binance_symbol]
                 logger.info(f"SELL order placed for {binance_symbol} at ${current_price}")
-    
+
     except Exception as e:
-        logger.error(f"Error executing trade for {symbol_name}: {e}")
+        logger.error(f"Error executing trade for {binance_symbol}: {e}")
 
 
 async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start autonomous trading"""
+    """Start scalping scanner across all liquid USDT pairs"""
     try:
         binance_client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY)
-        
+
         # Get account balance
         balance = await binance_client.get_account_balance()
         if not balance:
             await update.message.reply_text("❌ Erreur: Impossible de vérifier le solde")
             return
-        
-        message = f"🤖 *Mode Trading Autonome*\n\n💰 Solde USDT: ${balance:.2f}\n"
-        message += f"📊 Montant par trade: ${TRADE_AMOUNT}\n"
-        message += f"⛔ Stop Loss: {STOP_LOSS_PERCENT}%\n"
-        message += f"🎯 Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
-        message += "🚀 Analyse en cours...\n"
-        
+
+        trade_amount = calculate_trade_amount(balance)
+
+        message = (
+            f"🤖 *Scanner Scalping Actif*\n\n"
+            f"💰 Solde USDT: ${balance:.2f}\n"
+            f"📊 Montant par trade: ${trade_amount} (1% du solde)\n"
+            f"⛔ Stop Loss: {STOP_LOSS_PERCENT}%\n"
+            f"🎯 Take Profit: {TAKE_PROFIT_PERCENT}%\n"
+            f"🔎 Timeframes: {', '.join(SCALPING_TIMEFRAMES)}\n\n"
+            f"⏳ Recherche des paires liquides...\n"
+        )
         await update.message.reply_text(message, parse_mode="Markdown")
-        
-        # Analyze each trading pair
-        for symbol_name in TRADING_PAIRS.keys():
-            binance_symbol = TRADING_PAIRS[symbol_name]
-            buy_count = 0
-            sell_count = 0
-            
-            for tf in TIMEFRAMES:
+
+        # Discover liquid USDT pairs
+        symbols = await fetch_liquid_usdt_symbols(binance_client)
+        if not symbols:
+            await update.message.reply_text("❌ Aucune paire liquide trouvée")
+            return
+
+        await update.message.reply_text(
+            f"📡 {len(symbols)} paires liquides trouvées — analyse en cours...",
+            parse_mode="Markdown"
+        )
+
+        entries = 0
+
+        for binance_symbol in symbols:
+            # Skip if we hit the max position cap
+            if len(active_trades) >= MAX_OPEN_POSITIONS:
+                break
+
+            # Multi-timeframe analysis
+            tf_results = []
+            for tf in SCALPING_TIMEFRAMES:
                 result = await analyze_symbol(binance_client, binance_symbol, tf)
-                if result:
-                    if result["signal"] == "BUY":
-                        buy_count += 1
-                    elif result["signal"] == "SELL":
-                        sell_count += 1
-            
-            # Execute trade if signal is strong
-            if buy_count >= 2:
-                await execute_trade(binance_client, symbol_name, "BUY", update)
-            elif sell_count >= 2:
-                await execute_trade(binance_client, symbol_name, "SELL", update)
-        
-        # Report active trades
+                tf_results.append(result)
+
+            signal = scalping_signal(tf_results)
+
+            if signal in ("BUY", "SELL"):
+                await execute_trade(binance_client, binance_symbol, signal, update, trade_amount)
+                entries += 1
+
+        # Summary
+        summary = f"✅ *Scan terminé*\n{entries} signal(s) exécuté(s)"
         if active_trades:
-            trades_msg = "\n📋 *Positions Ouvertes:*\n"
+            summary += f"\n\n📋 *Positions Ouvertes ({len(active_trades)}):*\n"
             for symbol, trade in active_trades.items():
-                trades_msg += f"\n{symbol}: {trade['side']} @ ${trade['entry_price']:.2f}"
-            await update.message.reply_text(trades_msg, parse_mode="Markdown")
-    
+                summary += f"\n• {symbol}: {trade['side']} @ ${trade['entry_price']:.4f}"
+        await update.message.reply_text(summary, parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"Error in auto_trade: {e}")
         await update.message.reply_text(f"❌ Erreur: {str(e)}")
@@ -344,15 +503,18 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     message = (
-        "🤖 *Bot Trading Autonome Binance*\n\n"
+        "🤖 *Bot Scalping Binance*\n\n"
         "Commandes disponibles:\n"
-        "/trade - Démarrer le trading automatique\n"
+        "/trade - Démarrer le scanner scalping\n"
         "/status - Voir le statut des positions\n"
         "/stop - Arrêter le trading\n\n"
         f"⚙️ Configuration:\n"
-        f"• Montant par trade: ${TRADE_AMOUNT}\n"
+        f"• Risque par trade: {int(RISK_PER_TRADE * 100)}% du solde\n"
+        f"• Taille min/max: ${MIN_TRADE_AMOUNT}/${MAX_TRADE_AMOUNT}\n"
         f"• Stop Loss: {STOP_LOSS_PERCENT}%\n"
-        f"• Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
+        f"• Take Profit: {TAKE_PROFIT_PERCENT}%\n"
+        f"• Timeframes: {', '.join(SCALPING_TIMEFRAMES)}\n"
+        f"• Positions max: {MAX_OPEN_POSITIONS}\n\n"
         "⚠️ ATTENTION: Trading réel avec argent véritable!"
     )
     await update.message.reply_text(message, parse_mode="Markdown")
