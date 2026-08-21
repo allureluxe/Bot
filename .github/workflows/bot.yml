@@ -4,28 +4,31 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 */5 * * *'  # redémarre toutes les 5 heures (limite GitHub Actions = 6h)
+  workflow_dispatch:        # démarrage manuel depuis l'onglet Actions
 
 jobs:
   run_bot:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 350    # ~5h50, juste sous la limite de 6h
+
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
+
     - name: Run trading bot
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
         BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
+        TWELVE_API_KEY: ${{ secrets.TWELVE_API_KEY }}
       run: python trading_bot.py
