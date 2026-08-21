@@ -23,17 +23,31 @@ if not all([BOT_TOKEN, BINANCE_API_KEY, BINANCE_SECRET_KEY]):
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
+# Quote asset (USDC only)
+QUOTE_ASSET = "USDC"
+
 # Trading pairs configuration
 TRADING_PAIRS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "BNB": "BNBUSDT"
+    "BTC": f"BTC{QUOTE_ASSET}",
+    "ETH": f"ETH{QUOTE_ASSET}",
+    "BNB": f"BNB{QUOTE_ASSET}"
 }
 
-TRADE_AMOUNT = 20  # €20 par trade
+TRADE_AMOUNT = 20  # $20 par trade
 STOP_LOSS_PERCENT = 5  # 5% stop loss
 TAKE_PROFIT_PERCENT = 5  # 5% take profit
 TIMEFRAMES = ["15m", "1h", "4h"]  # Binance timeframes
+
+# --- Money management ---
+RISK_PER_TRADE = 0.01       # 1 % du solde USDC par position
+MIN_TRADE_AMOUNT = 5.0      # taille minimale en USDC
+MAX_TRADE_AMOUNT = 25.0     # plafond par position en USDC
+
+# --- Scalping scanner ---
+SCALPING_TIMEFRAMES = ["1m", "5m", "15m"]
+MIN_QUOTE_VOLUME = 5_000_000  # volume 24 h minimum en USDC
+MAX_SPREAD_PCT = 0.15         # spread bid/ask max toléré (%)
+MAX_OPEN_POSITIONS = 5        # nombre max de positions simultanées
 
 # Setup logging
 logging.basicConfig(
@@ -63,7 +77,7 @@ class BinanceClient:
         ).hexdigest()
     
     async def get_account_balance(self) -> Optional[float]:
-        """Get USDT balance"""
+        """Get USDC balance"""
         try:
             timestamp = int(datetime.now().timestamp() * 1000)
             params = f"timestamp={timestamp}"
@@ -77,7 +91,7 @@ class BinanceClient:
                     if response.status == 200:
                         data = await response.json()
                         for balance in data.get("balances", []):
-                            if balance["asset"] == "USDT":
+                            if balance["asset"] == QUOTE_ASSET:
                                 return float(balance["free"])
             return None
         except Exception as e:
@@ -274,8 +288,8 @@ async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Erreur: Impossible de vérifier le solde")
             return
         
-        message = f"🤖 *Mode Trading Autonome*\n\n💰 Solde USDT: ${balance:.2f}\n"
-        message += f"📊 Montant par trade: ${TRADE_AMOUNT}\n"
+        message = f"🤖 *Mode Trading Autonome*\n\n💰 Solde {QUOTE_ASSET}: {balance:.2f} {QUOTE_ASSET}\n"
+        message += f"📊 Montant par trade: {TRADE_AMOUNT} {QUOTE_ASSET}\n"
         message += f"⛔ Stop Loss: {STOP_LOSS_PERCENT}%\n"
         message += f"🎯 Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
         message += "🚀 Analyse en cours...\n"
@@ -322,7 +336,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = "📊 *Statut du Bot*\n\n"
         if balance:
-            message += f"💰 Solde USDT: ${balance:.2f}\n"
+            message += f"💰 Solde {QUOTE_ASSET}: {balance:.2f} {QUOTE_ASSET}\n"
         
         if active_trades:
             message += f"\n📋 Positions Ouvertes: {len(active_trades)}\n"
@@ -350,7 +364,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status - Voir le statut des positions\n"
         "/stop - Arrêter le trading\n\n"
         f"⚙️ Configuration:\n"
-        f"• Montant par trade: ${TRADE_AMOUNT}\n"
+        f"• Montant par trade: {TRADE_AMOUNT} {QUOTE_ASSET}\n"
         f"• Stop Loss: {STOP_LOSS_PERCENT}%\n"
         f"• Take Profit: {TAKE_PROFIT_PERCENT}%\n\n"
         "⚠️ ATTENTION: Trading réel avec argent véritable!"
