@@ -26,6 +26,18 @@ Un bot Telegram qui analyse les marchés financiers en temps réel en utilisant 
 - Compte Telegram avec bot token
 - Clé API Twelve Data
 
+### Obtenir vos clés API
+
+**BOT_TOKEN** (gratuit)
+1. Ouvrez Telegram et cherchez **@BotFather**
+2. Envoyez `/newbot`
+3. Suivez les instructions et copiez le token fourni
+
+**TWELVE_API_KEY** (gratuit)
+1. Créez un compte sur [twelvedata.com](https://twelvedata.com/)
+2. Allez dans **Dashboard → API Keys**
+3. Copiez votre clé API
+
 ### Étapes
 
 1. **Cloner le repository**
@@ -34,7 +46,7 @@ git clone https://github.com/allureluxe/Bot.git
 cd Bot
 ```
 
-2. **Créer un environnement virtuel**
+2. **Créer un environnement virtuel** (recommandé)
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
@@ -52,16 +64,18 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Éditer `.env` et ajouter:
+Ouvrez le fichier `.env` et remplacez les valeurs :
 ```
-BOT_TOKEN=votre_token_telegram
-TWELVE_API_KEY=votre_clé_api_twelve_data
+BOT_TOKEN=votre_token_telegram_ici
+TWELVE_API_KEY=votre_clé_api_twelve_data_ici
 ```
 
 5. **Lancer le bot**
 ```bash
 python main.py
 ```
+
+Vous devriez voir : `✅ Bot trading avancé actif...`
 
 ## Utilisation
 
