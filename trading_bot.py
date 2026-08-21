@@ -74,8 +74,12 @@ class BinanceClient:
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response_text = await response.text()
+                    logger.info(f"Binance balance status: {response.status}")
+                    logger.info(f"Binance balance response body: {response_text}")
+
                     if response.status == 200:
-                        data = await response.json()
+                        data = json.loads(response_text)
                         for balance in data.get("balances", []):
                             if balance["asset"] == "USDT":
                                 return float(balance["free"])
