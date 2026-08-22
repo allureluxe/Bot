@@ -78,28 +78,38 @@ def ema(prices, period):
 
 
 def rsi(prices, period=14):
-    """Calculate Relative Strength Index"""
+    """Calculate Relative Strength Index (Wilder smoothing, current value).
+
+    Bug fix: the previous version averaged only the first `period` price
+    changes in the buffer, so with 100 candles it reported an RSI from ~85
+    candles ago and never reflected the current market.
+    """
     if len(prices) < period + 1:
         logger.warning(f"Insufficient data for RSI calculation: {len(prices)} < {period + 1}")
         return None
-    
-    gains = []
-    losses = []
 
+    gains = 0.0
+    losses = 0.0
     for i in range(1, period + 1):
         change = prices[i] - prices[i - 1]
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
+        if change >= 0:
+            gains += change
         else:
-            gains.append(0)
-            losses.append(abs(change))
+            losses -= change
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    avg_gain = gains / period
+    avg_loss = losses / period
+
+    # Wilder smoothing over the remaining candles, up to the latest one.
+    for i in range(period + 1, len(prices)):
+        change = prices[i] - prices[i - 1]
+        gain = change if change > 0 else 0.0
+        loss = -change if change < 0 else 0.0
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
 
     if avg_loss == 0:
-        return 100
+        return 100.0 if avg_gain > 0 else 50.0
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
@@ -119,7 +129,7 @@ async def analyze(symbol, tf):
         ema50 = ema(prices, 50)
         current_rsi = rsi(prices, 14)
 
-        if not all([ema20, ema50, current_rsi]):
+        if ema20 is None or ema50 is None or current_rsi is None:
             return None
 
         if current_price > ema20 > ema50 and current_rsi > 55:
