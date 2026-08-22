@@ -197,7 +197,21 @@ workflow du dépôt a été converti en CI : il lance les tests, rien d'autre.
 Il faut un serveur qui tourne en permanence, dans une région non restreinte par
 Binance (Europe, Asie). Un VPS à quelques euros par mois suffit.
 
-### systemd (recommandé)
+### Installation en une commande (Debian / Ubuntu)
+
+```bash
+git clone -b claude/trading-bots-scalping-rindfe https://github.com/allureluxe/Bot.git
+cd Bot && bash deploy/install.sh
+```
+
+Le script **commence par vérifier que Binance répond depuis ce serveur** et
+s'arrête net si l'IP est bloquée (HTTP 451) — inutile d'installer quoi que ce
+soit dans ce cas. Ensuite il installe les dépendances, crée l'environnement
+Python, génère le service systemd aux bons chemins, lance les tests et affiche
+le diagnostic. Il ne démarre pas le bot : les commandes finales sont affichées
+à la fin.
+
+### systemd (manuel)
 
 ```bash
 sudo cp deploy/scalper.service /etc/systemd/system/
