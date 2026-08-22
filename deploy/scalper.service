@@ -1,0 +1,31 @@
+# Service systemd pour faire tourner le bot 24/7 sur un VPS.
+#
+#   sudo cp deploy/scalper.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now scalper
+#   journalctl -u scalper -f        # suivre les logs en direct
+#
+# Adapter User, WorkingDirectory et le chemin du venv.
+
+[Unit]
+Description=Bot de scalping Binance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/home/trader/bot
+EnvironmentFile=/home/trader/bot/.env
+ExecStart=/home/trader/bot/venv/bin/python run_scalper.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+# Le bot recharge son etat au demarrage : un redemarrage ne perd aucune position.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
