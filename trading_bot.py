@@ -539,6 +539,7 @@ async def execute_trade(
                     "timestamp": datetime.now(),
                     "order_id": order.get("orderId")
                 }
+                save_trades()
                 message = f"✅ *BUY Exécuté*\n{symbol}\nPrix: ${current_price}\nQuantité: {round(quantity, 8)}"
                 await update.message.reply_text(message, parse_mode="Markdown")
                 logger.info(f"BUY order placed for {symbol} at ${current_price}")
@@ -559,6 +560,7 @@ async def execute_trade(
                 await update.message.reply_text(message, parse_mode="Markdown")
                 if symbol in active_trades:
                     del active_trades[symbol]
+                    save_trades()
                 logger.info(f"SELL order placed for {symbol} at ${current_price}")
                 return True, 0.0
             await update.message.reply_text(f"⚠️ {symbol}: SELL rejeté par Binance")
@@ -568,6 +570,67 @@ async def execute_trade(
     except Exception as e:
         logger.error(f"Error executing trade for {symbol}: {e}")
         return False, 0.0
+
+
+async def monitor_positions() -> None:
+    """Background task: check SL/TP for every open position every MONITOR_INTERVAL seconds."""
+    binance_client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET_KEY)
+    logger.info("🔍 Moniteur de positions démarré")
+    while True:
+        try:
+            await asyncio.sleep(MONITOR_INTERVAL)
+            if not active_trades:
+                continue
+
+            symbols_to_close: List[Tuple[str, str, float]] = []  # (symbol, reason, current_price)
+
+            for symbol, trade in list(active_trades.items()):
+                try:
+                    current_price = await binance_client.get_current_price(symbol)
+                    if current_price is None:
+                        continue
+                    entry_price = trade["entry_price"]
+                    tp_price = entry_price * (1 + TAKE_PROFIT_PERCENT / 100)
+                    sl_price = entry_price * (1 - STOP_LOSS_PERCENT / 100)
+
+                    if current_price >= tp_price:
+                        symbols_to_close.append((symbol, "TAKE_PROFIT", current_price))
+                    elif current_price <= sl_price:
+                        symbols_to_close.append((symbol, "STOP_LOSS", current_price))
+                except Exception as e:
+                    logger.error(f"monitor_positions: erreur sur {symbol}: {e}")
+
+            for symbol, reason, current_price in symbols_to_close:
+                if symbol not in active_trades:
+                    continue
+                trade = active_trades[symbol]
+                quantity = trade["quantity"]
+                exchange_info = await binance_client.get_exchange_info()
+                if not exchange_info:
+                    logger.error(f"monitor_positions: exchange_info indisponible pour {symbol}")
+                    continue
+                filters = parse_symbol_filters(exchange_info, symbol)
+                if not filters:
+                    logger.error(f"monitor_positions: filtres introuvables pour {symbol}")
+                    continue
+                order_qty = format_quantity(quantity, filters["step_size"])
+                order = await binance_client.place_order(symbol, "SELL", order_qty)
+                if order:
+                    pnl_pct = (current_price - trade["entry_price"]) / trade["entry_price"] * 100
+                    logger.info(
+                        f"[MONITOR] {reason} — {symbol} vendu @ {current_price:.6f} "
+                        f"(entrée {trade['entry_price']:.6f}, PnL {pnl_pct:+.2f}%)"
+                    )
+                    del active_trades[symbol]
+                    save_trades()
+                else:
+                    logger.error(f"monitor_positions: SELL rejeté par Binance pour {symbol}")
+
+        except asyncio.CancelledError:
+            logger.info("Moniteur de positions arrêté")
+            break
+        except Exception as e:
+            logger.error(f"monitor_positions: erreur inattendue: {e}")
 
 
 async def auto_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -782,13 +845,20 @@ def main():
         logger.critical(f"❌ Variables d'environnement manquantes : {', '.join(missing)}")
         raise SystemExit(1)
 
+    load_trades()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
+
+    async def _start_monitor(app):
+        asyncio.create_task(monitor_positions())
+
+    app.post_init = _start_monitor
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("trade", auto_trade))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("stop", stop_trading))
-    
+
     logger.info("✅ Bot trading autonome Binance actif...")
     app.run_polling()
 
