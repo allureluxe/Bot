@@ -1,4 +1,7 @@
+# Bot de scalping (run_scalper.py)
+aiohttp==3.9.5
+python-dotenv==1.0.1
+
+# Bots Telegram historiques (main.py / trading_bot.py)
 python-telegram-bot==20.3
-aiohttp==3.8.5
-python-dotenv==1.0.0
 requests==2.31.0

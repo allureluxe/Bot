@@ -1,0 +1,8 @@
+services:
+  scalper:
+    build: .
+    container_name: scalping-bot
+    env_file: .env
+    volumes:
+      - ./state:/app/state
+    restart: unless-stopped

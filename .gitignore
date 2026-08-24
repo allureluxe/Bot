@@ -41,3 +41,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Etat du bot de scalping (positions, journal de trades)
+state/
+*.log
