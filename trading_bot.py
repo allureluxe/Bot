@@ -5,7 +5,7 @@ import aiohttp
 import math
 from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import hmac
 import hashlib
@@ -34,18 +34,22 @@ MAX_TRADE_AMOUNT = 25.0     # plafond par position en USDC
 
 # --- Scalping scanner ---
 SCALPING_TIMEFRAMES = ["1m", "5m", "15m"]
+TREND_TIMEFRAME = "1h"      # timeframe supérieur pour filtre de tendance
 MIN_QUOTE_VOLUME = float(os.getenv("MIN_QUOTE_VOLUME", "1000000"))  # volume 24 h minimum en USDC
 MAX_SPREAD_PCT = float(os.getenv("MAX_SPREAD_PCT", "0.35"))         # spread bid/ask max toléré (%)
 MAX_OPEN_POSITIONS = 5        # nombre max de positions simultanées
-MIN_SIGNAL_CONFIRMATIONS = int(os.getenv("MIN_SIGNAL_CONFIRMATIONS", "2"))
+# Toujours 3 confirmations (toutes les timeframes)
+MIN_SIGNAL_CONFIRMATIONS = len(SCALPING_TIMEFRAMES)
 NOTIONAL_TOLERANCE = 0.9999   # tolérance pour éviter les faux rejets de flottants
+
+# --- Position monitoring ---
+MONITOR_INTERVAL = 30         # secondes entre chaque vérification SL/TP
+TRADES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_trades.json")
 
 if MIN_QUOTE_VOLUME < 100_000:
     MIN_QUOTE_VOLUME = 100_000
 if MAX_SPREAD_PCT <= 0 or MAX_SPREAD_PCT > 1.0:
     MAX_SPREAD_PCT = 0.35
-if MIN_SIGNAL_CONFIRMATIONS < 1 or MIN_SIGNAL_CONFIRMATIONS > len(SCALPING_TIMEFRAMES):
-    MIN_SIGNAL_CONFIRMATIONS = 2
 
 # Setup logging
 logging.basicConfig(
@@ -54,8 +58,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Active trades tracking
+# Active trades tracking (persisted to disk)
 active_trades: Dict[str, Dict] = {}
+
+# Telegram chat_id pour les notifications du moniteur
+_monitor_chat_id: Optional[int] = None
+_bot_instance: Optional[Bot] = None
+
+
+# ---------------------------------------------------------------------------
+# Persistence helpers
+# ---------------------------------------------------------------------------
+
+def save_trades() -> None:
+    """Persist active_trades to disk."""
+    try:
+        serializable = {}
+        for sym, trade in active_trades.items():
+            entry = dict(trade)
+            if isinstance(entry.get("timestamp"), datetime):
+                entry["timestamp"] = entry["timestamp"].isoformat()
+            serializable[sym] = entry
+        with open(TRADES_FILE, "w") as f:
+            json.dump(serializable, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving trades: {e}")
+
+
+def load_trades() -> None:
+    """Load active_trades from disk on startup."""
+    global active_trades
+    if not os.path.exists(TRADES_FILE):
+        return
+    try:
+        with open(TRADES_FILE, "r") as f:
+            data = json.load(f)
+        for sym, trade in data.items():
+            if "timestamp" in trade and isinstance(trade["timestamp"], str):
+                try:
+                    trade["timestamp"] = datetime.fromisoformat(trade["timestamp"])
+                except ValueError:
+                    pass
+            active_trades[sym] = trade
+        logger.info(f"Loaded {len(active_trades)} active trades from disk")
+    except Exception as e:
+        logger.error(f"Error loading trades: {e}")
 
 
 class BinanceClient:
@@ -146,6 +193,101 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Error placing order for {symbol}: {e}")
             return None
+
+    async def place_oco_order(
+        self,
+        symbol: str,
+        quantity: str,
+        take_profit_price: float,
+        stop_loss_price: float,
+        stop_limit_price: float,
+        price_decimals: int,
+    ) -> Optional[Dict]:
+        """Place an OCO (One-Cancels-the-Other) sell order for SL + TP."""
+        try:
+            def fmt(p: float) -> str:
+                return f"{p:.{price_decimals}f}"
+
+            timestamp = int(datetime.now().timestamp() * 1000)
+            params = (
+                f"symbol={symbol}"
+                f"&side=SELL"
+                f"&quantity={quantity}"
+                f"&price={fmt(take_profit_price)}"
+                f"&stopPrice={fmt(stop_loss_price)}"
+                f"&stopLimitPrice={fmt(stop_limit_price)}"
+                f"&stopLimitTimeInForce=GTC"
+                f"&timestamp={timestamp}"
+            )
+            signature = self._generate_signature(params)
+            headers = {"X-MBX-APIKEY": self.api_key}
+            url = f"{self.base_url}/api/v3/order/oco?{params}&signature={signature}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        error = await response.text()
+                        logger.error(f"Binance OCO error for {symbol}: {error}")
+            return None
+        except Exception as e:
+            logger.error(f"Error placing OCO order for {symbol}: {e}")
+            return None
+
+    async def get_open_orders(self, symbol: Optional[str] = None) -> Optional[List[Dict]]:
+        """Get open orders for a symbol (or all symbols)."""
+        try:
+            timestamp = int(datetime.now().timestamp() * 1000)
+            params = f"timestamp={timestamp}"
+            if symbol:
+                params = f"symbol={symbol}&{params}"
+            signature = self._generate_signature(params)
+            headers = {"X-MBX-APIKEY": self.api_key}
+            url = f"{self.base_url}/api/v3/openOrders?{params}&signature={signature}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        return await response.json()
+            return None
+        except Exception as e:
+            logger.error(f"Error getting open orders: {e}")
+            return None
+
+    async def get_asset_balance(self, asset: str) -> Optional[float]:
+        """Get free balance of a specific asset."""
+        try:
+            timestamp = int(datetime.now().timestamp() * 1000)
+            params = f"timestamp={timestamp}"
+            signature = self._generate_signature(params)
+            headers = {"X-MBX-APIKEY": self.api_key}
+            url = f"{self.base_url}/api/v3/account?{params}&signature={signature}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        for b in data.get("balances", []):
+                            if b["asset"] == asset:
+                                return float(b["free"])
+            return None
+        except Exception as e:
+            logger.error(f"Error getting asset balance for {asset}: {e}")
+            return None
+
+    async def get_symbol_price_filter(self, exchange_info: Dict, symbol: str) -> Optional[Dict[str, float]]:
+        """Get tick size (price precision) for a symbol."""
+        for sym_info in exchange_info.get("symbols", []):
+            if sym_info.get("symbol") != symbol:
+                continue
+            price_filter = next(
+                (f for f in sym_info.get("filters", []) if f.get("filterType") == "PRICE_FILTER"),
+                None,
+            )
+            if price_filter:
+                tick_size = float(price_filter.get("tickSize", "0.01"))
+                decimals = max(0, int(round(-math.log10(tick_size)))) if tick_size < 1 else 0
+                return {"tick_size": tick_size, "decimals": decimals}
+        return None
 
     async def get_exchange_info(self) -> Optional[Dict]:
         """Get Binance exchange metadata"""
