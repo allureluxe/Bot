@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Luna · Compagne virtuelle fictive</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Prototype local · sans serveur complexe</p>
+          <h1>Luna</h1>
+          <p class="subtitle">
+            Luna est une IA fictive adulte, glamour et non explicite. Aucun flux webcam n'est envoyé sur Internet.
+          </p>
+        </div>
+        <div class="badges" aria-label="Informations importantes">
+          <span class="badge badge-safe">IA fictive adulte</span>
+          <span class="badge">Caméra locale uniquement</span>
+          <span class="badge">Style non explicite</span>
+        </div>
+      </header>
+
+      <!-- La webcam et Luna restent dans deux panneaux séparés. -->
+      <main class="layout">
+        <section class="panel webcam-panel" aria-labelledby="webcam-title">
+          <div class="panel-header">
+            <div>
+              <h2 id="webcam-title">Votre caméra</h2>
+              <p>Activez ou coupez la webcam frontale quand vous voulez.</p>
+            </div>
+            <button id="cameraToggle" class="button primary" type="button">Activer la caméra</button>
+          </div>
+
+          <div class="video-shell">
+            <video id="webcam" autoplay playsinline muted></video>
+            <div id="videoFallback" class="video-fallback">
+              <p>La caméra est désactivée.</p>
+              <small>Rien n'est enregistré, rien n'est envoyé.</small>
+            </div>
+          </div>
+
+          <div class="panel-footer">
+            <p id="cameraStatus" class="status-pill">Caméra inactive</p>
+            <p class="microcopy">Astuce : autorisez la caméra quand le navigateur le demande.</p>
+          </div>
+        </section>
+
+        <section class="panel avatar-panel" aria-labelledby="avatar-title">
+          <div class="panel-header">
+            <div>
+              <h2 id="avatar-title">Luna en face-à-face</h2>
+              <p>Scène 3D locale avec silhouette élégante de secours si aucun modèle n'est fourni.</p>
+            </div>
+            <div class="toolbar">
+              <label class="button secondary file-label" for="modelInput">Charger un .glb/.gltf</label>
+              <input id="modelInput" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" />
+              <button id="resetModel" class="button secondary" type="button">Utiliser le modèle de secours</button>
+            </div>
+          </div>
+
+          <div class="scene-shell">
+            <canvas id="sceneCanvas" aria-label="Avatar 3D de Luna"></canvas>
+            <div class="scene-overlay">
+              <p id="modelStatus" class="status-pill">Silhouette 3D locale active</p>
+            </div>
+          </div>
+
+          <div class="panel-footer">
+            <p class="microcopy">Pour un rendu photoréaliste, importez un avatar autorisé en .glb/.gltf.</p>
+          </div>
+        </section>
+
+        <!-- Le chat reste local et ne nécessite aucune clé API. -->
+        <section class="panel chat-panel" aria-labelledby="chat-title">
+          <div class="panel-header chat-header">
+            <div>
+              <h2 id="chat-title">Discussion locale</h2>
+              <p>Luna répond en français avec une voix de synthèse si disponible.</p>
+            </div>
+            <button id="voiceToggle" class="button secondary" type="button">Voix activée</button>
+          </div>
+
+          <div id="messages" class="messages" aria-live="polite"></div>
+
+          <form id="chatForm" class="composer">
+            <label class="sr-only" for="chatInput">Message pour Luna</label>
+            <input
+              id="chatInput"
+              name="message"
+              type="text"
+              maxlength="280"
+              placeholder="Écrivez par exemple : Bonsoir Luna"
+              autocomplete="off"
+            />
+            <button class="button primary" type="submit">Envoyer</button>
+          </form>
+        </section>
+      </main>
+
+      <aside class="panel help-panel" aria-labelledby="help-title">
+        <h2 id="help-title">Lancement rapide</h2>
+        <ol>
+          <li>Ouvrez un terminal dans le dossier <code>luna-web/</code>.</li>
+          <li>Lancez <code>python3 -m http.server 8000</code>.</li>
+          <li>Ouvrez <code>http://localhost:8000</code> dans votre navigateur.</li>
+        </ol>
+        <p>
+          Besoin d'aide détaillée ? Le fichier <code>README.md</code> du dossier <code>luna-web/</code> explique chaque étape pour ChromeOS/Linux.
+        </p>
+      </aside>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
